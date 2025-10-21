@@ -301,15 +301,47 @@ export default function Home() {
             <h3 style={{marginTop:0}}>{editingId ? "Editar depósito" : "Novo depósito"}</h3>
             {erro && <div className="badge" style={{borderColor:"#7f1d1d", color:"#fca5a5"}}>{erro}</div>}
             <div className="grid" style={{gridTemplateColumns:"1fr 1fr", gap:12}}>
-              <div><label>Valor (R$)</label><input className="input" placeholder="Valor (R$)" value={dep.valor||""} onChange={e=>setDep(v=>({...v, valor:e.target.value}))} /></div>
+              {/* VALOR -> number */}
+              <div>
+                <label>Valor (R$)</label>
+                <input
+                  className="input"
+                  type="number"
+                  step="0.01"
+                  placeholder="Valor (R$)"
+                  value={dep.valor ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const num = val === "" ? undefined : Number(val.replace(",", "."));
+                    setDep(v => ({ ...v, valor: num as any }));
+                  }}
+                />
+              </div>
+
               <div><label>Data</label><input className="input" type="date" value={dep.data||""} onChange={e=>setDep(v=>({...v, data:e.target.value}))} /></div>
               <div><label>ID do usuário</label><input className="input" placeholder="ID do usuário" value={dep.idUsuario||""} onChange={e=>setDep(v=>({...v, idUsuario:e.target.value}))} /></div>
               <div><label>Email (opcional)</label><input className="input" placeholder="Email (opcional)" value={dep.email||""} onChange={e=>setDep(v=>({...v, email:e.target.value}))} /></div>
               <div><label>Telefone (opcional)</label><input className="input" placeholder="Telefone (opcional)" value={dep.telefone||""} onChange={e=>setDep(v=>({...v, telefone:e.target.value}))} /></div>
+
+              {/* TICKET -> number */}
               <div className="flex" style={{gap:8}}>
-                <div style={{flex:1}}><label>Ticket (1-1000)</label><input className="input" placeholder="Ticket" value={dep.ticket||""} onChange={e=>setDep(v=>({...v, ticket:e.target.value}))} /></div>
+                <div style={{flex:1}}>
+                  <label>Ticket (1-1000)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    placeholder="Ticket"
+                    value={dep.ticket ?? ""}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const num = val === "" ? undefined : Math.max(1, Math.min(1000, parseInt(val, 10) || 0));
+                      setDep(v => ({ ...v, ticket: num as any }));
+                    }}
+                  />
+                </div>
                 <div style={{alignSelf:"end"}}><button className="badge" onClick={gerarTicket}>Gerar</button></div>
               </div>
+
               <div style={{gridColumn:"1 / -1"}}><label>Comprovante (imagem até ~900KB)</label><input className="input" type="file" onChange={e=>setFile(e.target.files?.[0]||null)} /></div>
             </div>
             <div className="flex" style={{marginTop:12}}>
