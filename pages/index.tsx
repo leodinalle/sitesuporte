@@ -56,6 +56,10 @@ export default function Home() {
   const [periodo, setPeriodo] = useState<"Diário" | "Semanal" | "Mensal">("Diário")
   const [listaIndicadores, setListaIndicadores] = useState<Indicador[]>([])
 
+  // --------- ESTADO DO VALIDADOR (NOVO) ----------
+  const [valStatus, setValStatus] = useState<"" | "ok" | "nao" | "erro" | "loading">("")
+  const [valMsg, setValMsg] = useState<string>("")
+
   useEffect(() => {
     const q = query(collection(db, "depositos"), orderBy("criadoEm", "desc"))
     const unsub = onSnapshot(q, (snap) => {
@@ -224,6 +228,55 @@ export default function Home() {
     else alert("Login incorreto")
   }
 
+  // --------- FUNÇÃO VALIDAR USUÁRIO (NOVO) ----------
+  async function validarUsuario() {
+    const user_id = dep.idUsuario ? String(dep.idUsuario).trim() : null
+    const user_email = dep.email ? String(dep.email).trim() : null
+
+    if (!user_id && !user_email) {
+      alert("Preencha ID do usuário ou Email para validar.")
+      return
+    }
+
+    setValStatus("loading")
+    setValMsg("Validando...")
+
+    try {
+      const r = await fetch("/api/affiduser", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id, user_email })
+      })
+      const data = await r.json()
+
+      let affiliated: boolean | null = null
+      if (typeof data?.user === "boolean") affiliated = data.user
+      else if (typeof data?.upstream?.user === "boolean") affiliated = data.upstream.user
+      else if (typeof data?.upstream?.affiliated === "boolean") affiliated = data.upstream.affiliated
+      else if (typeof data?.upstream?.is_affiliate === "boolean") affiliated = data.upstream.is_affiliate
+      else if (typeof data?.upstream?.isAffiliated === "boolean") affiliated = data.upstream.isAffiliated
+      else if (data?.upstream?.status === "AFFILIATED" || data?.upstream?.status === "OK") affiliated = true
+      else if (data?.upstream?.status === "NOT_AFFILIATED" || data?.upstream?.status === "NOT_FOUND") affiliated = false
+
+      if (!r.ok) {
+        setValStatus("erro")
+        setValMsg(`Erro ${r.status}: ${data?.error || "Falha na validação"}`)
+      } else if (affiliated === true) {
+        setValStatus("ok")
+        setValMsg("ok")
+      } else if (affiliated === false) {
+        setValStatus("nao")
+        setValMsg("nao")
+      } else {
+        setValStatus("erro")
+        setValMsg("Não foi possível determinar (verifique logs).")
+      }
+    } catch (e:any) {
+      setValStatus("erro")
+      setValMsg("Falha na requisição.")
+    }
+  }
+
   if (!logado) {
     return (
       <div className="wrap" style={{display:"grid", placeItems:"center", minHeight:"100vh"}}>
@@ -342,10 +395,33 @@ export default function Home() {
                 <div style={{alignSelf:"end"}}><button className="badge" onClick={gerarTicket}>Gerar</button></div>
               </div>
 
-              <div style={{gridColumn:"1 / -1"}}><label>Comprovante (imagem até ~900KB)</label><input className="input" type="file" onChange={e=>setFile(e.target.files?.[0]||null)} /></div>
+              {/* Comprovante */}
+              <div style={{gridColumn:"1 / -1"}}>
+                <label>Comprovante (imagem até ~900KB)</label>
+                <input className="input" type="file" onChange={e=>setFile(e.target.files?.[0]||null)} />
+              </div>
+
+              {/* ====== BOTÃO VALIDAR USUÁRIO (NOVO) ====== */}
+              <div style={{gridColumn:"1 / -1"}} className="flex" >
+                <button className="btn" onClick={validarUsuario}>🔎 Validar usuário</button>
+                {valStatus === "loading" && <span className="small" style={{marginLeft:8}}>Validando...</span>}
+                {valStatus === "ok" && (
+                  <span className="badge" style={{borderColor:"#14532d", color:"#22c55e", marginLeft:8}}>ok</span>
+                )}
+                {valStatus === "nao" && (
+                  <span className="badge" style={{borderColor:"#7f1d1d", color:"#ef4444", marginLeft:8}}>nao</span>
+                )}
+                {valStatus === "erro" && (
+                  <span className="badge" style={{borderColor:"#7f1d1d", color:"#fca5a5", marginLeft:8}}>{valMsg || "erro"}</span>
+                )}
+              </div>
+              {/* ====== FIM VALIDAR ====== */}
             </div>
+
             <div className="flex" style={{marginTop:12}}>
-              <button className="primary" onClick={salvarOuAtualizar} disabled={salvando}>{salvando? (editingId?"Atualizando...":"Salvando...") : (editingId ? "Salvar alterações" : "Salvar depósito")}</button>
+              <button className="primary" onClick={salvarOuAtualizar} disabled={salvando}>
+                {salvando? (editingId?"Atualizando...":"Salvando...") : (editingId ? "Salvar alterações" : "Salvar depósito")}
+              </button>
               {editingId && <button className="btn" onClick={()=>{ setEditingId(null); setDep({ data: new Date().toISOString().slice(0,10) }); }}>Cancelar</button>}
             </div>
             <p className="small" style={{marginTop:8}}>Ao salvar, entra em "Meus Depósitos" e também em "Todos os Depósitos".</p>
