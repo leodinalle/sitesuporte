@@ -121,7 +121,7 @@ export default function Home() {
       const v = data.ticket
       if (typeof v === "number") used.add(v)
       const arr: number[] | undefined = data.tickets
-      if (Array.isArray(arr)) arr.forEach(n => typeof n === "number" && used.add(n))
+      if (Array.isArray(arr)) arr.forEach((n: number) => typeof n === "number" && used.add(n))
     })
     return used
   }
@@ -239,12 +239,16 @@ export default function Home() {
     return { start: toStr(start), end: toStr(end), label: `${toStr(start)} a ${toStr(end)}` }
   }
 
+  // >>> Restaurada: não depende do suporte para listar <<<
   async function carregarIndicadores() {
-    if (!suporte) return setListaIndicadores([])
-    const snap = await getDocs(query(collection(db, "indicadores"), where("suporte","==", suporte)))
+    const snap = await getDocs(collection(db, "indicadores"))
     const all = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) })) as Indicador[]
     const { start, end } = rangePeriodo()
-    const filtrados = all.filter(i => i.data >= start && i.data <= end)
+    const filtrados = all.filter(i => {
+      const noPeriodo = i.data >= start && i.data <= end
+      const doSuporte = suporte ? i.suporte === suporte : true
+      return noPeriodo && doSuporte
+    })
     setListaIndicadores(filtrados.sort((a,b)=> a.data.localeCompare(b.data)))
   }
   useEffect(() => { carregarIndicadores() }, [suporte, periodo, ind.data])
@@ -629,6 +633,62 @@ export default function Home() {
               </>
             )
           })()}
+        </section>
+      )}
+
+      {/* INDICADORES — restaurado */}
+      {tab==="indicadores" && (
+        <section className="grid" style={{gap:16}}>
+          <div className="card">
+            <h3 style={{marginTop:0}}>Filtrar Indicadores</h3>
+            <div className="grid" style={{gridTemplateColumns:"1fr 1fr", gap:12}}>
+              <div><label>Período</label>
+                <select className="input" value={periodo} onChange={e=>setPeriodo(e.target.value as any)}>
+                  <option>Diário</option><option>Semanal</option><option>Mensal</option>
+                </select></div>
+              <div><label>Data de referência</label><input className="input" type="date" value={ind.data||""} onChange={e=>setInd((v:any)=>({...v, data:e.target.value}))} /></div>
+            </div>
+            <div className="small" style={{marginTop:8}}>Exibindo: {range.label}</div>
+          </div>
+
+          <div className="card">
+            <h3 style={{marginTop:0}}>Preencher Indicadores do Dia</h3>
+            <div className="grid" style={{gridTemplateColumns:"1fr 1fr 1fr", gap:12}}>
+              <div><label>Leads Alcançados</label><input className="input" value={ind.leads} onChange={e=>setInd((v:any)=>({...v, leads:+e.target.value||0}))} /></div>
+              <div><label>VIP</label><input className="input" value={ind.vip} onChange={e=>setInd((v:any)=>({...v, vip:+e.target.value||0}))} /></div>
+              <div><label>Treinamento 7x1</label><input className="input" value={ind.treino7x1} onChange={e=>setInd((v:any)=>({...v, treino7x1:+e.target.value||0}))} /></div>
+              <div><label>Mentoria</label><input className="input" value={ind.mentoria} onChange={e=>setInd((v:any)=>({...v, mentoria:+e.target.value||0}))} /></div>
+              <div><label>Grupo Exclusivo</label><input className="input" value={ind.grupoExclusivo} onChange={e=>setInd((v:any)=>({...v, grupoExclusivo:+e.target.value||0}))} /></div>
+              <div><label>5 Estratégias</label><input className="input" value={ind.estrategias} onChange={e=>setInd((v:any)=>({...v, estrategias:+e.target.value||0}))} /></div>
+              <div><label>Kirvano</label><input className="input" value={ind.kirvano} onChange={e=>setInd((v:any)=>({...v, kirvano:+e.target.value||0}))} /></div>
+            </div>
+            <div className="flex" style={{marginTop:12}}>
+              <button className="primary" onClick={salvarIndicadores}>Salvar Indicadores</button>
+            </div>
+          </div>
+
+          <div className="card">
+            <h3 style={{marginTop:0}}>Indicadores Registrados ({range.label})</h3>
+            <div className="small" style={{marginBottom:8}}>
+              Totais — Leads: {listaIndicadores.reduce((s,i)=>s+i.leads,0)} · VIP: {listaIndicadores.reduce((s,i)=>s+i.vip,0)}
+              · 7x1: {listaIndicadores.reduce((s,i)=>s+i.treino7x1,0)} · Mentoria: {listaIndicadores.reduce((s,i)=>s+i.mentoria,0)}
+              · Grupo: {listaIndicadores.reduce((s,i)=>s+i.grupoExclusivo,0)} · 5E: {listaIndicadores.reduce((s,i)=>s+i.estrategias,0)}
+              · Kirvano: {listaIndicadores.reduce((s,i)=>s+i.kirvano,0)}
+            </div>
+            <table>
+              <thead><tr>
+                <th>Data</th><th>Leads</th><th>VIP</th><th>7x1</th><th>Mentoria</th><th>Grupo</th><th>5E</th><th>Kirvano</th>
+              </tr></thead>
+              <tbody>
+                {listaIndicadores.length===0 && (<tr><td colSpan={8} className="small">Nenhum indicador registrado para este período.</td></tr>)}
+                {listaIndicadores.map(i=>(
+                  <tr key={i.id}>
+                    <td>{i.data}</td><td>{i.leads}</td><td>{i.vip}</td><td>{i.treino7x1}</td><td>{i.mentoria}</td><td>{i.grupoExclusivo}</td><td>{i.estrategias}</td><td>{i.kirvano}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
