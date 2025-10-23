@@ -1,4 +1,4 @@
-//pages/index.tsx
+// pages/index.tsx
 import { useEffect, useMemo, useState } from "react"
 
 import { db } from "@/lib/firebase"
@@ -15,8 +15,17 @@ type Deposito = {
   idUsuario: string;
   email?: string;
   telefone?: string;
-  ticket: number;
-  comprovanteUrl?: string; // dataURL base64
+
+  // Tickets (compat + novo)
+  ticket: number;          // legado: primeiro ticket gerado
+  qtdTickets?: number;     // quantidade base (antes do multiplicador VIP)
+  tickets?: number[];      // todos os tickets gerados
+
+  // VIP
+  vip?: boolean;
+
+  // Comprovante
+  comprovanteUrl?: string; // dataURL base64 (imagem OU PDF)
   criadoEm?: any;
 }
 
@@ -40,7 +49,11 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("dados")
 
   // depósitos
-  const [dep, setDep] = useState<Partial<Deposito>>({ data: new Date().toISOString().slice(0,10) })
+  const [dep, setDep] = useState<Partial<Deposito>>({
+    data: new Date().toISOString().slice(0,10),
+    qtdTickets: 1,
+    vip: false
+  })
   const [file, setFile] = useState<File | null>(null)
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState<string| null>(null)
@@ -58,7 +71,7 @@ export default function Home() {
   const [periodo, setPeriodo] = useState<"Diário" | "Semanal" | "Mensal">("Diário")
   const [listaIndicadores, setListaIndicadores] = useState<Indicador[]>([])
 
-  // --------- ESTADO DO VALIDADOR (NOVO) ----------
+  // --------- ESTADO DO VALIDADOR ----------
   const [valStatus, setValStatus] = useState<"" | "ok" | "nao" | "erro" | "loading">("")
   const [valMsg, setValMsg] = useState<string>("")
 
@@ -89,58 +102,81 @@ export default function Home() {
     return { pos: pos>=0? pos+1 : null, valor }
   }, [ranking, suporte])
 
+  // ---------------- Utils ----------------
   async function fileToDataURL(f: File): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader()
       reader.onload = () => resolve(String(reader.result))
       reader.onerror = () => reject(new Error("Falha ao ler arquivo"))
-      reader.readAsDataURL(f)
+      reader.readAsDataURL(f) // funciona para imagem e PDF
     })
   }
 
-  // ---------------- Tickets (1–1000) sem repetir ----------------
-  async function gerarTicket() {
+  // tickets usados (legado e novo)
+  async function carregarTicketsUsados(): Promise<Set<number>> {
     const snap = await getDocs(collection(db, "depositos"))
     const used = new Set<number>()
-    snap.forEach(doc => { const v = doc.data().ticket; if (typeof v === "number") used.add(v) })
-
-    if (used.size >= 1000) {
-      alert("Todos os 1000 tickets já foram usados.")
-      return
-    }
-
-    let t = 0
-    while (t === 0 || t > 1000 || used.has(t)) {
-      t = Math.floor(Math.random() * 1000) + 1 // 1..1000
-    }
-    setDep(prev => ({ ...prev, ticket: t }))
+    snap.forEach(d => {
+      const data = d.data() as any
+      const v = data.ticket
+      if (typeof v === "number") used.add(v)
+      const arr: number[] | undefined = data.tickets
+      if (Array.isArray(arr)) arr.forEach(n => typeof n === "number" && used.add(n))
+    })
+    return used
   }
 
+  // gera N tickets únicos 1..1000
+  async function gerarTickets(qtd: number): Promise<number[]> {
+    const used = await carregarTicketsUsados()
+    if (used.size >= 1000) throw new Error("Todos os 1000 tickets já foram usados.")
+    const out: number[] = []
+    while (out.length < qtd) {
+      if (used.size + out.length >= 1000) {
+        throw new Error("Não há tickets suficientes disponíveis.")
+      }
+      const n = Math.floor(Math.random() * 1000) + 1
+      if (!used.has(n) && !out.includes(n)) out.push(n)
+    }
+    return out
+  }
+
+  // ---------------- Salvar/Atualizar ----------------
   async function salvarOuAtualizar() {
     setErro(null)
     if (!suporte) return setErro("Selecione o suporte.")
-    const obrig = ["valor","idUsuario","ticket","data"]
-    for (const c of obrig) if (!(dep as any)[c]) return setErro("Preencha todos os campos obrigatórios.")
+
+    // obrigatórios: ID, Valor, Comprovante
+    if (!dep.idUsuario || String(dep.idUsuario).trim() === "") {
+      return setErro("Informe o ID do usuário.")
+    }
+    if (dep.valor == null || Number.isNaN(Number(dep.valor))) {
+      return setErro("Informe o Valor.")
+    }
+    const temComprovante = Boolean(file) || Boolean(dep.comprovanteUrl)
+    if (!temComprovante) {
+      return setErro("Anexe o Comprovante (imagem ou PDF).")
+    }
+    if (!dep.data) return setErro("Informe a data.")
 
     setSalvando(true)
     try {
-      // valida faixa do ticket e duplicidade (inclusive em edição)
-      const ticketNum = Number(dep.ticket)
-      if (ticketNum < 1 || ticketNum > 1000) {
-        throw new Error("O ticket deve estar entre 1 e 1000.")
-      }
-      const qDup = query(collection(db, "depositos"), where("ticket","==", ticketNum))
-      const dup = await getDocs(qDup)
-      if (!dup.empty && (!editingId || dup.docs.some(d => d.id !== editingId))) {
-        throw new Error("Esse ticket já foi utilizado. Gere outro.")
-      }
-
+      // comprovante (imagem ou PDF)
       let comprovanteUrl: string | undefined = dep.comprovanteUrl as any
       if (file) {
+        const okType = file.type.startsWith("image/") || file.type === "application/pdf"
+        if (!okType) throw new Error("Comprovante inválido. Envie imagem ou PDF.")
         const maxBytes = 900 * 1024
         if (file.size > maxBytes) throw new Error("Comprovante muito grande. Envie até ~900KB.")
         comprovanteUrl = await fileToDataURL(file)
       }
+
+      // tickets: quantidade base * (VIP ? 4 : 1)
+      const qtdBase = Math.max(1, Number(dep.qtdTickets) || 1)
+      const multiplicador = dep.vip ? 4 : 1
+      const qtdFinal = qtdBase * multiplicador
+      const tickets = await gerarTickets(qtdFinal)
+      const ticketLegacy = tickets[0]
 
       const payload: Deposito = {
         valor: Number(dep.valor),
@@ -149,7 +185,10 @@ export default function Home() {
         idUsuario: String(dep.idUsuario),
         email: dep.email || "",
         telefone: dep.telefone || "",
-        ticket: ticketNum,
+        ticket: ticketLegacy,   // compat
+        qtdTickets: qtdBase,
+        tickets,
+        vip: !!dep.vip,
         comprovanteUrl,
         criadoEm: Timestamp.now()
       }
@@ -162,7 +201,7 @@ export default function Home() {
         alert("Depósito salvo!")
       }
 
-      setDep({ data: new Date().toISOString().slice(0,10) })
+      setDep({ data: new Date().toISOString().slice(0,10), qtdTickets: 1, vip: false })
       setFile(null)
       setEditingId(null)
     } catch (e:any) {
@@ -230,7 +269,7 @@ export default function Home() {
     else alert("Login incorreto")
   }
 
-  // --------- FUNÇÃO VALIDAR USUÁRIO (NOVO) ----------
+  // --------- VALIDAR USUÁRIO ----------
   async function validarUsuario() {
     const user_id = dep.idUsuario ? String(dep.idUsuario).trim() : null
     const user_email = dep.email ? String(dep.email).trim() : null
@@ -249,7 +288,10 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_id, user_email })
       })
-      const data = await r.json()
+
+      const raw = await r.text()
+      let data: any = null
+      try { data = JSON.parse(raw) } catch { data = { raw } }
 
       let affiliated: boolean | null = null
       if (typeof data?.user === "boolean") affiliated = data.user
@@ -356,7 +398,7 @@ export default function Home() {
             <h3 style={{marginTop:0}}>{editingId ? "Editar depósito" : "Novo depósito"}</h3>
             {erro && <div className="badge" style={{borderColor:"#7f1d1d", color:"#fca5a5"}}>{erro}</div>}
             <div className="grid" style={{gridTemplateColumns:"1fr 1fr", gap:12}}>
-              {/* VALOR -> number */}
+              {/* VALOR -> number (obrigatório) */}
               <div>
                 <label>Valor (R$)</label>
                 <input
@@ -374,57 +416,77 @@ export default function Home() {
               </div>
 
               <div><label>Data</label><input className="input" type="date" value={dep.data||""} onChange={e=>setDep(v=>({...v, data:e.target.value}))} /></div>
-              <div><label>ID do usuário</label><input className="input" placeholder="ID do usuário" value={dep.idUsuario||""} onChange={e=>setDep(v=>({...v, idUsuario:e.target.value}))} /></div>
+
+              {/* ID do usuário + Validador */}
+              <div style={{gridColumn:"1 / -1"}}>
+                <label>ID do usuário</label>
+                <div className="flex" style={{gap:8}}>
+                  <input
+                    className="input"
+                    placeholder="ID do usuário"
+                    value={dep.idUsuario||""}
+                    onChange={e=>setDep(v=>({...v, idUsuario:e.target.value}))}
+                    style={{flex:1}}
+                  />
+                  <button className="btn" onClick={validarUsuario}>Validar</button>
+                </div>
+                {valStatus === "loading" && <div className="small" style={{marginTop:6}}>Validando...</div>}
+                {valStatus === "ok" && <div className="badge" style={{marginTop:6, borderColor:"#14532d", color:"#22c55e"}}>ok</div>}
+                {valStatus === "nao" && <div className="badge" style={{marginTop:6, borderColor:"#7f1d1d", color:"#ef4444"}}>nao</div>}
+                {valStatus === "erro" && <div className="badge" style={{marginTop:6, borderColor:"#7f1d1d", color:"#fca5a5"}}>{valMsg || "erro"}</div>}
+              </div>
+
               <div><label>Email (opcional)</label><input className="input" placeholder="Email (opcional)" value={dep.email||""} onChange={e=>setDep(v=>({...v, email:e.target.value}))} /></div>
               <div><label>Telefone (opcional)</label><input className="input" placeholder="Telefone (opcional)" value={dep.telefone||""} onChange={e=>setDep(v=>({...v, telefone:e.target.value}))} /></div>
 
-              {/* TICKET -> number */}
+              {/* VIP + Quantidade de tickets */}
+              <div className="flex" style={{gap:8, alignItems:"center"}}>
+                <input id="vip" type="checkbox" checked={!!dep.vip} onChange={e=>setDep(v=>({...v, vip: e.target.checked}))} />
+                <label htmlFor="vip">Lead VIP (4x tickets)</label>
+              </div>
               <div className="flex" style={{gap:8}}>
                 <div style={{flex:1}}>
-                  <label>Ticket (1-1000)</label>
+                  <label>Qtd. de tickets</label>
                   <input
                     className="input"
                     type="number"
-                    placeholder="Ticket"
-                    value={dep.ticket ?? ""}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const num = val === "" ? undefined : Math.max(1, Math.min(1000, parseInt(val, 10) || 0));
-                      setDep(v => ({ ...v, ticket: num as any }));
-                    }}
+                    min={1}
+                    value={dep.qtdTickets ?? 1}
+                    onChange={e=>setDep(v=>({...v, qtdTickets: Math.max(1, parseInt(e.target.value||"1"))}))}
                   />
+                  <div className="small" style={{marginTop:4}}>
+                    Total gerado: {(Math.max(1, dep.qtdTickets||1)) * (dep.vip ? 4 : 1)} ticket(s)
+                  </div>
                 </div>
-                <div style={{alignSelf:"end"}}><button className="badge" onClick={gerarTicket}>Gerar</button></div>
+                <div style={{alignSelf:"end"}}>
+                  <button className="badge" onClick={async ()=>{
+                    try {
+                      const qtdBase = Math.max(1, Number(dep.qtdTickets)||1);
+                      const mult = dep.vip ? 4 : 1;
+                      const total = qtdBase * mult;
+                      const tks = await gerarTickets(total);
+                      setDep(v=>({ ...v, ticket: tks[0], tickets: tks }));
+                      alert(`Foram separados ${total} ticket(s): ${tks.slice(0,10).join(", ")}${tks.length>10?"...":""}`);
+                    } catch (e:any) {
+                      alert(e?.message || "Falha ao gerar tickets");
+                    }
+                  }}>Gerar agora</button>
+                </div>
               </div>
 
-              {/* Comprovante */}
+              {/* Comprovante (obrigatório) */}
               <div style={{gridColumn:"1 / -1"}}>
-                <label>Comprovante (imagem até ~900KB)</label>
-                <input className="input" type="file" onChange={e=>setFile(e.target.files?.[0]||null)} />
+                <label>Comprovante (imagem ou PDF até ~900KB)</label>
+                <input className="input" type="file" accept="image/*,.pdf,application/pdf"
+                  onChange={e=>setFile(e.target.files?.[0]||null)} />
               </div>
-
-              {/* ====== BOTÃO VALIDAR USUÁRIO (NOVO) ====== */}
-              <div style={{gridColumn:"1 / -1"}} className="flex" >
-                <button className="btn" onClick={validarUsuario}>🔎 Validar usuário</button>
-                {valStatus === "loading" && <span className="small" style={{marginLeft:8}}>Validando...</span>}
-                {valStatus === "ok" && (
-                  <span className="badge" style={{borderColor:"#14532d", color:"#22c55e", marginLeft:8}}>ok</span>
-                )}
-                {valStatus === "nao" && (
-                  <span className="badge" style={{borderColor:"#7f1d1d", color:"#ef4444", marginLeft:8}}>nao</span>
-                )}
-                {valStatus === "erro" && (
-                  <span className="badge" style={{borderColor:"#7f1d1d", color:"#fca5a5", marginLeft:8}}>{valMsg || "erro"}</span>
-                )}
-              </div>
-              {/* ====== FIM VALIDAR ====== */}
             </div>
 
             <div className="flex" style={{marginTop:12}}>
               <button className="primary" onClick={salvarOuAtualizar} disabled={salvando}>
                 {salvando? (editingId?"Atualizando...":"Salvando...") : (editingId ? "Salvar alterações" : "Salvar depósito")}
               </button>
-              {editingId && <button className="btn" onClick={()=>{ setEditingId(null); setDep({ data: new Date().toISOString().slice(0,10) }); }}>Cancelar</button>}
+              {editingId && <button className="btn" onClick={()=>{ setEditingId(null); setDep({ data: new Date().toISOString().slice(0,10), qtdTickets: 1, vip: false }); }}>Cancelar</button>}
             </div>
             <p className="small" style={{marginTop:8}}>Ao salvar, entra em "Meus Depósitos" e também em "Todos os Depósitos".</p>
           </div>
@@ -432,12 +494,19 @@ export default function Home() {
           <div className="card">
             <div className="section-title"><h3 style={{marginTop:0}}>Meus depósitos ({suporte||"--"})</h3></div>
             <table>
-              <thead><tr><th>Data</th><th>Ticket</th><th>Valor</th><th>ID Usuário</th><th>Comprovante</th><th></th></tr></thead>
+              <thead><tr><th>Data</th><th>Tickets</th><th>Valor</th><th>ID Usuário</th><th>Comprovante</th><th></th></tr></thead>
               <tbody>
                 {meus.map(d=>(
                   <tr key={d.id}>
                     <td>{d.data}</td>
-                    <td>#{d.ticket}</td>
+                    <td>
+                      {d.tickets && d.tickets.length > 0
+                        ? <>#{d.tickets.slice(0,5).join(", #")}{d.tickets.length>5?"…":""}</>
+                        : <>#{d.ticket}</>
+                      }
+                      {d.vip && <span className="badge" style={{marginLeft:6}}>VIP</span>}
+                      {d.qtdTickets && <span className="small" style={{marginLeft:6}}>{(d.vip? d.qtdTickets*4 : d.qtdTickets)} no total</span>}
+                    </td>
                     <td>R$ {Number(d.valor).toLocaleString("pt-BR",{minimumFractionDigits:2})}</td>
                     <td>{d.idUsuario}</td>
                     <td>{d.comprovanteUrl ? <button className="btn" onClick={()=>setModalUrl(d.comprovanteUrl!)}>ver</button> : "-"}</td>
@@ -453,7 +522,7 @@ export default function Home() {
         </section>
       )}
 
-      {/* TODOS OS DEPÓSITOS — KPIs + Ranking + Lista detalhada, com filtro por período */}
+      {/* TODOS OS DEPÓSITOS */}
       {tab==="todos" && (
         <section className="grid" style={{gap:16}}>
           <div className="card">
@@ -531,7 +600,7 @@ export default function Home() {
                   <h3 style={{marginTop:0}}>Depósitos Detalhados - Este Período</h3>
                   <table>
                     <thead><tr>
-                      <th>Data</th><th>Suporte</th><th>Ticket</th><th>Valor</th><th>ID Usuário</th><th>Comprovante</th>
+                      <th>Data</th><th>Suporte</th><th>Tickets</th><th>Valor</th><th>ID Usuário</th><th>Comprovante</th>
                     </tr></thead>
                     <tbody>
                       {filtrados.length === 0 && (
@@ -541,7 +610,14 @@ export default function Home() {
                         <tr key={d.id}>
                           <td>{d.data}</td>
                           <td>{d.suporte}</td>
-                          <td>#{d.ticket}</td>
+                          <td>
+                            {d.tickets && d.tickets.length > 0
+                              ? <>#{d.tickets.slice(0,5).join(", #")}{d.tickets.length>5?"…":""}</>
+                              : <>#{d.ticket}</>
+                            }
+                            {d.vip && <span className="badge" style={{marginLeft:6}}>VIP</span>}
+                            {d.qtdTickets && <span className="small" style={{marginLeft:6}}>{(d.vip? d.qtdTickets*4 : d.qtdTickets)} no total</span>}
+                          </td>
                           <td>R$ {Number(d.valor).toLocaleString("pt-BR",{minimumFractionDigits:2})}</td>
                           <td>{d.idUsuario}</td>
                           <td>{d.comprovanteUrl ? <button className="btn" onClick={()=>setModalUrl(d.comprovanteUrl!)}>ver</button> : "-"}</td>
@@ -556,62 +632,7 @@ export default function Home() {
         </section>
       )}
 
-      {tab==="indicadores" && (
-        <section className="grid" style={{gap:16}}>
-          <div className="card">
-            <h3 style={{marginTop:0}}>Filtrar Indicadores</h3>
-            <div className="grid" style={{gridTemplateColumns:"1fr 1fr", gap:12}}>
-              <div><label>Período</label>
-                <select className="input" value={periodo} onChange={e=>setPeriodo(e.target.value as any)}>
-                  <option>Diário</option><option>Semanal</option><option>Mensal</option>
-                </select></div>
-              <div><label>Data de referência</label><input className="input" type="date" value={ind.data||""} onChange={e=>setInd((v:any)=>({...v, data:e.target.value}))} /></div>
-            </div>
-            <div className="small" style={{marginTop:8}}>Exibindo: {range.label}</div>
-          </div>
-
-          <div className="card">
-            <h3 style={{marginTop:0}}>Preencher Indicadores do Dia</h3>
-            <div className="grid" style={{gridTemplateColumns:"1fr 1fr 1fr", gap:12}}>
-              <div><label>Leads Alcançados</label><input className="input" value={ind.leads} onChange={e=>setInd((v:any)=>({...v, leads:+e.target.value||0}))} /></div>
-              <div><label>VIP</label><input className="input" value={ind.vip} onChange={e=>setInd((v:any)=>({...v, vip:+e.target.value||0}))} /></div>
-              <div><label>Treinamento 7x1</label><input className="input" value={ind.treino7x1} onChange={e=>setInd((v:any)=>({...v, treino7x1:+e.target.value||0}))} /></div>
-              <div><label>Mentoria</label><input className="input" value={ind.mentoria} onChange={e=>setInd((v:any)=>({...v, mentoria:+e.target.value||0}))} /></div>
-              <div><label>Grupo Exclusivo</label><input className="input" value={ind.grupoExclusivo} onChange={e=>setInd((v:any)=>({...v, grupoExclusivo:+e.target.value||0}))} /></div>
-              <div><label>5 Estratégias</label><input className="input" value={ind.estrategias} onChange={e=>setInd((v:any)=>({...v, estrategias:+e.target.value||0}))} /></div>
-              <div><label>Kirvano</label><input className="input" value={ind.kirvano} onChange={e=>setInd((v:any)=>({...v, kirvano:+e.target.value||0}))} /></div>
-            </div>
-            <div className="flex" style={{marginTop:12}}>
-              <button className="primary" onClick={salvarIndicadores}>Salvar Indicadores</button>
-            </div>
-          </div>
-
-          <div className="card">
-            <h3 style={{marginTop:0}}>Indicadores Registrados ({range.label})</h3>
-            <div className="small" style={{marginBottom:8}}>
-              Totais — Leads: {listaIndicadores.reduce((s,i)=>s+i.leads,0)} · VIP: {listaIndicadores.reduce((s,i)=>s+i.vip,0)}
-              · 7x1: {listaIndicadores.reduce((s,i)=>s+i.treino7x1,0)} · Mentoria: {listaIndicadores.reduce((s,i)=>s+i.mentoria,0)}
-              · Grupo: {listaIndicadores.reduce((s,i)=>s+i.grupoExclusivo,0)} · 5E: {listaIndicadores.reduce((s,i)=>s+i.estrategias,0)}
-              · Kirvano: {listaIndicadores.reduce((s,i)=>s+i.kirvano,0)}
-            </div>
-            <table>
-              <thead><tr>
-                <th>Data</th><th>Leads</th><th>VIP</th><th>7x1</th><th>Mentoria</th><th>Grupo</th><th>5E</th><th>Kirvano</th>
-              </tr></thead>
-              <tbody>
-                {listaIndicadores.length===0 && (<tr><td colSpan={8} className="small">Nenhum indicador registrado para este período.</td></tr>)}
-                {listaIndicadores.map(i=>(
-                  <tr key={i.id}>
-                    <td>{i.data}</td><td>{i.leads}</td><td>{i.vip}</td><td>{i.treino7x1}</td><td>{i.mentoria}</td><td>{i.grupoExclusivo}</td><td>{i.estrategias}</td><td>{i.kirvano}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {/* Modal do comprovante: abre a imagem dentro do site */}
+      {/* Modal do comprovante: imagem ou PDF */}
       {modalUrl && (
         <div className="modal" onClick={()=>setModalUrl(null)}>
           <div className="box" onClick={e=>e.stopPropagation()}>
@@ -619,7 +640,11 @@ export default function Home() {
               <div className="small">Comprovante</div>
               <button className="warn" onClick={()=>setModalUrl(null)}>Fechar</button>
             </div>
-            <img src={modalUrl} alt="Comprovante" style={{maxWidth:"100%", height:"auto", marginTop:8}} />
+            {(modalUrl.startsWith("data:application/pdf") || modalUrl.toLowerCase().endsWith(".pdf")) ? (
+              <embed src={modalUrl} type="application/pdf" style={{width:"100%", height:"70vh", marginTop:8, border:"none"}} />
+            ) : (
+              <img src={modalUrl} alt="Comprovante" style={{maxWidth:"100%", height:"auto", marginTop:8}} />
+            )}
           </div>
         </div>
       )}
