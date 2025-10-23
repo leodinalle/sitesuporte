@@ -1,50 +1,34 @@
-// pages/api/affiduser.ts
-import type { NextApiRequest, NextApiResponse } from "next";
+import { NextRequest, NextResponse } from "next/server";
 
-const RYAN_URL = process.env.RYAN_API_URL || "https://primary-production-e6a4.up.railway.app/webhook/affiduser";
-const RYAN_BEARER = process.env.RYAN_BEARER || "";
+const UPSTREAM = "https://primary-production-e6a4.up.railway.app/webhook/affiduser";
+// FIXO para evitar erro de env:
+const BEARER  = "z3Q7pK1vM8yXnF4$dW9@R0LbV5gT2uH!eSj6Yr&PqXc8ZtB";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+export const runtime = "nodejs";
 
+export async function POST(req: NextRequest) {
   try {
-    const { user_id = null, user_email = null } = req.body || {};
-    if (!user_id && !user_email) {
-      return res.status(400).json({ error: "Informe user_id ou user_email" });
-    }
+    const body = await req.json();
+    let { user_id, user_email } = body || {};
 
-    const headers: Record<string,string> = {
-      "Content-Type": "application/json",
-      "Accept": "application/json"
-    };
-    // token só se existir
-    if (RYAN_BEARER) headers["Authorization"] = `Bearer ${RYAN_BEARER}`;
+    // normaliza tipos (API espera number ou null)
+    if (user_id === "" || user_id === undefined) user_id = null;
+    if (typeof user_id === "string" && /^\d+$/.test(user_id)) user_id = Number(user_id);
+    if (user_email === "" || user_email === undefined) user_email = null;
 
-    // manda snake e camel para máxima compatibilidade
-    const body = JSON.stringify({
-      user_id, user_email,
-      userId: user_id,
-      userEmail: user_email
+    const r = await fetch(UPSTREAM, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${BEARER}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ user_id, user_email }),
     });
 
-    const upstream = await fetch(RYAN_URL, { method: "POST", headers, body });
-    const text = await upstream.text();
-    let data: any; try { data = JSON.parse(text); } catch { data = { raw: text }; }
-
-    let affiliated: boolean | null = null;
-    if (typeof data?.user === "boolean") affiliated = data.user;
-    else if (typeof data?.affiliated === "boolean") affiliated = data.affiliated;
-    else if (typeof data?.is_affiliate === "boolean") affiliated = data.is_affiliate;
-    else if (typeof data?.isAffiliated === "boolean") affiliated = data.isAffiliated;
-    else if (data?.status === "AFFILIATED" || data?.status === "OK") affiliated = true;
-    else if (data?.status === "NOT_AFFILIATED" || data?.status === "NOT_FOUND") affiliated = false;
-
-    return res.status(upstream.ok ? 200 : upstream.status).json({
-      ok: upstream.ok,
-      user: affiliated,
-      upstream: data
-    });
+    const text = await r.text();
+    const ct = r.headers.get("content-type") || "application/json; charset=utf-8";
+    return new NextResponse(text, { status: r.status, headers: { "Content-Type": ct } });
   } catch (e:any) {
-    return res.status(500).json({ error: "Erro ao validar", detail: String(e?.message || e) });
+    return NextResponse.json({ error: e?.message ?? "proxy_error" }, { status: 500 });
   }
 }
