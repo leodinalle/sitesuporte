@@ -1,4 +1,6 @@
+//pages/index.tsx
 import { useEffect, useMemo, useState } from "react"
+
 import { db } from "@/lib/firebase"
 import {
   addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query,
